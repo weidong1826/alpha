@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Binance Alpha 统计看板 (云同步版)</title>
+    
+    <!-- 依赖库 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.4.4/lz-string.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #f3f4f6; -webkit-tap-highlight-color: transparent; }
+        .card { background: white; border-radius: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .btn-primary { background-color: #F0B90B; color: #1e2329; font-weight: 600; }
+        .btn-primary:active { background-color: #dfa800; transform: scale(0.98); }
+        .text-profit { color: #0ecb81; }
+        .text-loss { color: #f6465d; }
+        .tab-active { background-color: #F0B90B; color: #1e2329; font-weight: 600; border-color: #F0B90B; }
+        .tab-inactive { background-color: white; color: #6b7280; border: 1px solid #e5e7eb; }
+        @media (max-width: 640px) { .container { padding-left: 12px; padding-right: 12px; } }
+        
+        /* 状态指示灯 */
+        .status-dot { height: 8px; width: 8px; border-radius: 50%; display: inline-block; }
+        .status-online { background-color: #0ecb81; box-shadow: 0 0 4px #0ecb81; }
+        .status-offline { background-color: #9ca3af; }
+    </style>
+</head>
+<body class="text-gray-800 pb-10">
+
+    <!-- 顶部导航 -->
+    <nav class="bg-gray-900 text-white p-3 sticky top-0 z-50 shadow-lg">
+        <div class="container mx-auto flex justify-between items-center">
+            <div class="flex items-center gap-2">
+                <i class="fa-brands fa-bitcoin text-yellow-500 text-xl"></i>
+                <h1 class="text-lg font-bold hidden md:block">Alpha 统计</h1>
+                <!-- 云同步状态指示 -->
+                <div id="cloud-status" class="flex items-center gap-1 bg-gray-800 px-2 py-1 rounded text-xs cursor-pointer" onclick="app.toggleSyncModal()">
+                    <span class="status-dot status-offline" id="status-dot"></span>
+                    <span id="status-text" class="text-gray-400">离线</span>
+                </div>
+            </div>
+            <div class="flex gap-2 items-center">
+                <div class="flex items-center bg-gray-800 rounded-lg p-0.5">
+                    <button id="btn-usd" onclick="app.setCurrency('USD')" class="px-2 py-1 rounded text-xs font-medium bg-yellow-500 text-gray-900">USD</button>
+                    <button id="btn-cny" onclick="app.setCurrency('CNY')" class="px-2 py-1 rounded text-xs font-medium text-gray-400">CNY</button>
+                </div>
+                
+                <button onclick="app.toggleSyncModal()" class="bg-blue-600 active:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-xs flex items-center gap-1 shadow">
+                    <i class="fa-solid fa-cloud"></i> <span class="hidden md:inline">同步</span>
+                </button>
+
+                <div class="relative group">
+                    <button class="bg-gray-700 p-1.5 rounded text-white text-sm"><i class="fa-solid fa-ellipsis-vertical px-1"></i></button>
+                    <div class="absolute right-0 top-full mt-2 w-44 bg-white text-gray-800 rounded-lg shadow-xl border overflow-hidden hidden group-hover:block group-focus-within:block z-50">
+                        <label class="block px-4 py-3 hover:bg-gray-50 cursor-pointer text-sm border-b">
+                            <i class="fa-solid fa-file-excel mr-2 text-green-600"></i> 导入 Excel
+                            <input type="file" id="fileInput" accept=".csv, .xlsx, .xls" class="hidden" onchange="app.handleFileUpload(this)">
+                        </label>
+                        <button onclick="app.exportExcel()" class="w-full text-left px-4 py-3 hover:bg-gray-50 text-sm border-b">
+                            <i class="fa-solid fa-file-export mr-2 text-blue-500"></i> 导出 Excel
+                        </button>
+                        <button onclick="app.clearData()" class="w-full text-left px-4 py-3 hover:bg-gray-50 text-sm text-red-600">
+                            <i class="fa-solid fa-trash mr-2"></i> 清空数据
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container mx-auto mt-4 space-y-4">
+
+        <!-- Tabs -->
+        <div class="grid grid-cols-4 gap-2 text-center text-sm">
+            <button onclick="app.setRange('day')" id="tab-day" class="tab-inactive py-2 rounded-lg transition">今日</button>
+            <button onclick="app.setRange('15')" id="tab-15" class="tab-inactive py-2 rounded-lg transition">近15天</button>
+            <button onclick="app.setRange('month')" id="tab-month" class="tab-inactive py-2 rounded-lg transition">本月</button>
+            <button onclick="app.setRange('all')" id="tab-all" class="tab-active py-2 rounded-lg transition">全部</button>
+        </div>
+
+        <!-- 看板 -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div class="card p-4 border-l-4 border-blue-500">
+                <p class="text-xs text-gray-500" id="label-net">总净收益</p>
+                <h2 id="stats-net" class="text-xl md:text-2xl font-bold mt-1">--</h2>
+            </div>
+            <div class="card p-4 border-l-4 border-green-500">
+                <p class="text-xs text-gray-500" id="label-profit">总收益</p>
+                <h2 id="stats-profit" class="text-xl md:text-2xl font-bold mt-1 text-profit">--</h2>
+            </div>
+            <div class="card p-4 border-l-4 border-red-500">
+                <p class="text-xs text-gray-500" id="label-cost">总损耗</p>
+                <h2 id="stats-cost" class="text-xl md:text-2xl font-bold mt-1 text-loss">--</h2>
+            </div>
+            <div class="card p-4 border-l-4 border-yellow-500">
+                <p class="text-xs text-gray-500" id="label-days">统计天数</p>
+                <h2 id="stats-days" class="text-xl md:text-2xl font-bold mt-1 text-gray-700">0</h2>
+            </div>
+        </div>
+
+        <!-- 录入 -->
+        <div class="card p-4">
+            <h3 class="font-bold text-base mb-3 text-gray-800 flex items-center">
+                <i class="fa-solid fa-pen-to-square mr-2 text-yellow-500"></i> 
+                <span>记一笔</span>
+            </h3>
+            <form id="addForm" onsubmit="event.preventDefault(); app.addEntry();" class="space-y-3">
+                <div class="grid grid-cols-3 gap-3">
+                    <div class="col-span-3">
+                        <label class="text-xs text-gray-500">日期</label>
+                        <input type="date" id="input-date" required class="w-full mt-1 border rounded-lg p-2 bg-gray-50 focus:ring-2 focus:ring-yellow-400 outline-none">
+                    </div>
+                    
+                    <div class="col-span-1.5">
+                        <label class="text-xs text-gray-500">账号1 损耗(负)</label>
+                        <input type="number" step="0.01" id="input-loss1" placeholder="-0" class="w-full mt-1 border rounded-lg p-2 text-red-600 bg-red-50 focus:ring-red-200 outline-none">
+                    </div>
+                    <div class="col-span-1.5">
+                        <label class="text-xs text-gray-500">账号1 收益(正)</label>
+                        <input type="number" step="0.01" id="input-profit1" placeholder="0" class="w-full mt-1 border rounded-lg p-2 text-green-600 bg-green-50 focus:ring-green-200 outline-none">
+                    </div>
+
+                    <div class="col-span-1.5">
+                        <label class="text-xs text-gray-500">账号2 损耗(负)</label>
+                        <input type="number" step="0.01" id="input-loss2" placeholder="-0" class="w-full mt-1 border rounded-lg p-2 text-red-600 bg-red-50 focus:ring-red-200 outline-none">
+                    </div>
+                    <div class="col-span-1.5">
+                        <label class="text-xs text-gray-500">账号2 收益(正)</label>
+                        <input type="number" step="0.01" id="input-profit2" placeholder="0" class="w-full mt-1 border rounded-lg p-2 text-green-600 bg-green-50 focus:ring-green-200 outline-none">
+                    </div>
+                </div>
+                <button type="submit" class="w-full btn-primary py-3 rounded-lg shadow-md text-sm mt-2">
+                    保存记录
+                </button>
+            </form>
+        </div>
+
+        <!-- 列表 -->
+        <div class="card overflow-hidden">
+            <div class="p-3 bg-gray-50 border-b flex justify-between items-center">
+                <h3 class="font-bold text-sm text-gray-700">历史记录 (USD)</h3>
+                <span class="text-xs text-gray-400">表格可左右滑动</span>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm text-left whitespace-nowrap">
+                    <thead class="text-xs text-gray-500 bg-gray-100 uppercase">
+                        <tr>
+                            <th class="px-4 py-3 sticky left-0 bg-gray-100">日期</th>
+                            <th class="px-4 py-3 text-right">净利</th>
+                            <th class="px-4 py-3 text-right text-red-500">总损</th>
+                            <th class="px-4 py-3 text-right text-green-500">总赚</th>
+                            <th class="px-4 py-3 text-center">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="dataTableBody" class="divide-y divide-gray-200">
+                        <!-- JS 填充 -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- 同步/配置 模态框 -->
+    <div id="syncModal" class="fixed inset-0 bg-black bg-opacity-60 hidden z-[60] flex items-center justify-center p-4">
+        <div class="bg-white rounded-xl w-full max-w-md overflow-hidden shadow-2xl animate-fade-in-up">
+            <div class="bg-gray-900 text-white p-4 flex justify-between items-center">
+                <h3 class="font-bold text-lg"><i class="fa-solid fa-cloud-arrow-up mr-2"></i>云同步设置</h3>
+                <button onclick="app.toggleSyncModal()" class="text-gray-400 hover:text-white"><i class="fa-solid fa-xmark text-xl"></i></button>
+            </div>
+            
+            <div class="p-5 space-y-6">
+                <!-- 步骤 1: 配置 Firebase (如果未配置) -->
+                <div id="firebase-setup-guide" class="hidden">
+                    <div class="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-xs text-yellow-800 mb-4">
+                        <strong>未检测到 Firebase 配置！</strong><br>
+                        要使用云同步，请在代码中填入您的 Firebase 配置。<br>
+                        1. 去 <a href="https://console.firebase.google.com/" target="_blank" class="underline">Firebase Console</a> 创建项目。<br>
+                        2. 创建 Web 应用并复制 <code>firebaseConfig</code>。<br>
+                        3. 创建 Firestore 数据库 (测试模式)。<br>
+                        4. 将配置粘贴到本网页代码的 <code>YOUR_FIREBASE_CONFIG</code> 处。
+                    </div>
+                </div>
+
+                <!-- 步骤 2: 连接同步 -->
+                <div id="sync-controls">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">同步 ID (房间号)</label>
+                    <div class="flex gap-2 mb-2">
+                        <input type="text" id="sync-room-id" placeholder="例如: my-secret-wallet-888" class="flex-1 border rounded-lg p-2 text-sm bg-gray-50 focus:ring-2 focus:ring-yellow-400 outline-none">
+                        <button onclick="app.connectCloud()" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700">
+                            连接
+                        </button>
+                    </div>
+                    <p class="text-xs text-gray-400 mb-4">注意：所有使用此 ID 的设备将共享数据。请使用复杂的 ID 以防他人猜测。</p>
+                    
+                    <div id="sync-actions" class="hidden grid grid-cols-2 gap-3 border-t pt-4">
+                        <button onclick="app.pushToCloud(true)" class="bg-green-600 text-white py-2 rounded-lg text-sm">
+                            <i class="fa-solid fa-upload mr-1"></i> 上传本地数据
+                        </button>
+                        <button onclick="app.pullFromCloud()" class="bg-yellow-500 text-white py-2 rounded-lg text-sm">
+                            <i class="fa-solid fa-download mr-1"></i> 下载云端数据
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 备用方案 -->
+                <div class="text-center border-t pt-4">
+                    <button onclick="app.toggleQrBackup()" class="text-xs text-gray-400 underline hover:text-gray-600">
+                        不使用云数据库？使用二维码/文件备份
+                    </button>
+                </div>
+                
+                <!-- 二维码/文件备份区 (默认隐藏) -->
+                <div id="qr-backup-area" class="hidden pt-4 space-y-4">
+                    <div class="text-center">
+                        <div id="qrcode-container" class="flex justify-center bg-gray-50 p-2 rounded-lg border min-h-[120px] items-center mb-2">
+                            <div id="qrcode" class="opacity-90"></div>
+                        </div>
+                        <button onclick="app.backupToFile()" class="bg-gray-200 px-3 py-1 rounded text-xs mr-2">保存文件</button>
+                        <label class="bg-gray-200 px-3 py-1 rounded text-xs cursor-pointer">
+                            读取文件 <input type="file" accept=".json" class="hidden" onchange="app.restoreFromFile(this)">
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast" class="fixed top-20 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-4 py-2 rounded-lg shadow-lg text-sm transition-opacity duration-300 opacity-0 pointer-events-none z-[70]">
+        操作成功
+    </div>
+
+    <!-- 逻辑脚本 (Module 模式以使用 Import) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getFirestore, doc, onSnapshot, setDoc, getDoc, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+
+        // ==========================================
+        // 重要：请在此处填入您的 FIREBASE 配置
+        // 如果您在 GitHub Pages 上使用，必须填写此部分
+        // ==========================================
+        const YOUR_FIREBASE_CONFIG = {
+            apiKey: "AIzaSyAyINAT-c9Sa95eAxZw8Z57k4XXpF_QzHQ",
+            authDomain: "my-alpha-stats.firebaseapp.com",
+            projectId: "my-alpha-stats",
+            storageBucket: "my-alpha-stats.firebasestorage.app",
+            messagingSenderId: "696209201738",
+            appId: "1:696209201738:web:e9db44ce7525fed54a24b3"
+        };
+
+        // 尝试获取环境配置 (兼容 Code Canvas 环境)
+        const envConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const activeConfig = envConfig || (YOUR_FIREBASE_CONFIG.apiKey ? YOUR_FIREBASE_CONFIG : null);
+
+        const STORAGE_KEY = 'binance_alpha_v1';
+        
+        // App Logic
+        window.app = {
+            data: [],
+            currency: 'USD',
+            exchangeRate: 7.25,
+            currentRange: 'all', 
+            db: null,
+            cloudRef: null,
+            isSyncing: false,
+
+            init() {
+                // UI Init
+                document.getElementById('input-date').valueAsDate = new Date();
+                
+                // Load Local Data
+                const stored = localStorage.getItem(STORAGE_KEY);
+                if (stored) {
+                    try { this.data = JSON.parse(stored); this.sortData(); } catch (e) { this.data = []; }
+                }
+                this.updateUI();
+
+                // Check Config
+                if (!activeConfig) {
+                    document.getElementById('firebase-setup-guide').classList.remove('hidden');
+                } else {
+                    this.initFirebase();
+                }
+
+                // Check LocalStorage for saved Room ID to auto-connect
+                const savedRoomId = localStorage.getItem('alpha_sync_room_id');
+                if (savedRoomId && activeConfig) {
+                    document.getElementById('sync-room-id').value = savedRoomId;
+                    // Optional: Auto-connect logic could go here, but manual is safer for now
+                }
+            },
+
+            async initFirebase() {
+                try {
+                    const app = initializeApp(activeConfig);
+                    const auth = getAuth(app);
+                    await signInAnonymously(auth);
+                    this.db = getFirestore(app);
+                    console.log("Firebase initialized");
+                } catch (e) {
+                    console.error("Firebase init failed", e);
+                }
+            },
+
+            async connectCloud() {
+                if (!this.db) return alert("Firebase 初始化失败，请检查配置");
+                const roomId = document.getElementById('sync-room-id').value.trim();
+                if (!roomId) return alert("请输入同步 ID");
+
+                // Save ID for convenience
+                localStorage.setItem('alpha_sync_room_id', roomId);
+                
+                // Use a standard public collection path pattern compatible with generic Firestore rules
+                // Path: artifacts/{appId}/public/data/sync_rooms/{roomId}
+                // If using personal Firebase, we can use a root collection like 'alpha_sync_rooms'
+                
+                // Logic to switch path based on environment
+                let colRef;
+                if (envConfig && typeof __app_id !== 'undefined') {
+                    // Canvas Environment Strict Path
+                    colRef = collection(this.db, 'artifacts', __app_id, 'public', 'data', 'sync_rooms');
+                } else {
+                    // Generic GitHub Pages Path (Root collection)
+                    colRef = collection(this.db, 'alpha_sync_data');
+                }
+                
+                this.cloudRef = doc(colRef, roomId);
+
+                // Start Listening
+                this.isSyncing = true;
+                document.getElementById('sync-actions').classList.remove('hidden');
+                this.updateStatus(true);
+
+                onSnapshot(this.cloudRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        const cloudData = docSnap.data().records;
+                        // Simple check: if cloud has data and local is empty, auto pull
+                        if (this.data.length === 0 && cloudData && cloudData.length > 0) {
+                            this.data = cloudData;
+                            this.saveData(false); // save locally, don't push back
+                            this.showToast("已从云端同步数据");
+                        }
+                        // If both have data and differ, we could show a dot, but for now we rely on manual "Download" button to resolve conflicts safely
+                    }
+                });
+                
+                this.showToast("已连接云端");
+            },
+
+            async pushToCloud(manual = false) {
+                if (!this.cloudRef) return;
+                try {
+                    await setDoc(this.cloudRef, { 
+                        records: this.data, 
+                        lastUpdated: new Date().toISOString(),
+                        device: navigator.userAgent
+                    });
+                    if (manual) this.showToast("上传成功");
+                } catch (e) {
+                    console.error(e);
+                    alert("上传失败: " + e.message);
+                }
+            },
+
+            async pullFromCloud() {
+                if (!this.cloudRef) return;
+                const docSnap = await getDoc(this.cloudRef);
+                if (docSnap.exists()) {
+                    const records = docSnap.data().records;
+                    if (records) {
+                        if (confirm(`云端有 ${records.length} 条数据，是否覆盖本地？`)) {
+                            this.data = records;
+                            this.saveData(false);
+                            this.showToast("下载成功");
+                        }
+                    }
+                } else {
+                    alert("云端暂无该房间的数据");
+                }
+            },
+
+            updateStatus(online) {
+                const dot = document.getElementById('status-dot');
+                const text = document.getElementById('status-text');
+                if (online) {
+                    dot.className = "status-dot status-online";
+                    text.innerText = "已同步";
+                    text.className = "text-green-400 font-bold";
+                } else {
+                    dot.className = "status-dot status-offline";
+                    text.innerText = "离线";
+                    text.className = "text-gray-400";
+                }
+            },
+
+            // --- Standard App Logic ---
+
+            sortData() { this.data.sort((a, b) => new Date(b.date) - new Date(a.date)); },
+
+            setCurrency(curr) {
+                this.currency = curr;
+                document.getElementById('btn-usd').className = `px-2 py-1 rounded text-xs font-medium transition ${curr === 'USD' ? 'bg-yellow-500 text-gray-900' : 'text-gray-400'}`;
+                document.getElementById('btn-cny').className = `px-2 py-1 rounded text-xs font-medium transition ${curr === 'CNY' ? 'bg-yellow-500 text-gray-900' : 'text-gray-400'}`;
+                this.updateUI();
+            },
+
+            setRange(range) {
+                this.currentRange = range;
+                ['day', '15', 'month', 'all'].forEach(r => {
+                    document.getElementById(`tab-${r}`).className = (r === range) ? 'tab-active py-2 rounded-lg transition border border-yellow-500 shadow-sm' : 'tab-inactive py-2 rounded-lg transition';
+                });
+                const labels = { 'day': '今日', '15': '近15天', 'month': '本月', 'all': '全部' };
+                document.getElementById('label-net').innerText = `${labels[range]}净收益`;
+                document.getElementById('label-profit').innerText = `${labels[range]}收益`;
+                document.getElementById('label-cost').innerText = `${labels[range]}损耗`;
+                this.updateUI();
+            },
+
+            getFilteredData() {
+                const now = new Date();
+                const localDate = new Date().toLocaleDateString('en-CA');
+                const currentMonthPrefix = localDate.substring(0, 7);
+                return this.data.filter(item => {
+                    if (this.currentRange === 'all') return true;
+                    if (this.currentRange === 'day') return item.date === localDate;
+                    if (this.currentRange === 'month') return item.date.startsWith(currentMonthPrefix);
+                    if (this.currentRange === '15') {
+                        const itemDate = new Date(item.date);
+                        const diffDays = (now - itemDate) / (1000 * 60 * 60 * 24); 
+                        return diffDays >= 0 && diffDays <= 15;
+                    }
+                    return true;
+                });
+            },
+
+            formatMoney(amount) {
+                const rate = this.currency === 'CNY' ? this.exchangeRate : 1;
+                const symbol = this.currency === 'CNY' ? '¥' : '$';
+                return symbol + (amount * rate).toLocaleString('en-US', {minimumFractionDigits: 0, maximumFractionDigits: 2});
+            },
+
+            updateUI() {
+                const filteredData = this.getFilteredData();
+                let totalP = 0, totalL = 0;
+                filteredData.forEach(d => { totalP += d.totalProfit; totalL += d.totalLoss; });
+                const totalN = totalP + totalL;
+                document.getElementById('stats-profit').innerText = this.formatMoney(totalP);
+                document.getElementById('stats-cost').innerText = this.formatMoney(totalL);
+                const netEl = document.getElementById('stats-net');
+                netEl.innerText = this.formatMoney(totalN);
+                netEl.className = `text-xl md:text-2xl font-bold mt-1 ${totalN >= 0 ? 'text-profit' : 'text-loss'}`;
+                document.getElementById('stats-days').innerText = filteredData.length;
+                this.renderTable(filteredData); 
+            },
+
+            renderTable(displayData) {
+                const tbody = document.getElementById('dataTableBody');
+                tbody.innerHTML = '';
+                if (displayData.length === 0) {
+                    tbody.innerHTML = `<tr><td colspan="5" class="px-4 py-8 text-center text-gray-400">暂无数据</td></tr>`;
+                    return;
+                }
+                displayData.forEach((item) => {
+                    const originalIndex = this.data.indexOf(item);
+                    const row = document.createElement('tr');
+                    row.className = "hover:bg-gray-50 bg-white";
+                    row.innerHTML = `
+                        <td class="px-4 py-3 font-medium text-gray-900 sticky left-0 bg-white border-r">${item.date.slice(5)}</td>
+                        <td class="px-4 py-3 text-right font-bold ${item.net >= 0 ? 'text-green-600' : 'text-red-600'}">${item.net > 0 ? '+' : ''}${item.net.toFixed(0)}</td>
+                        <td class="px-4 py-3 text-right text-gray-400 text-xs">${item.totalLoss.toFixed(0)}</td>
+                        <td class="px-4 py-3 text-right text-gray-400 text-xs">${item.totalProfit > 0 ? item.totalProfit.toFixed(0) : '-'}</td>
+                        <td class="px-4 py-3 text-center"><button onclick="app.deleteEntry(${originalIndex})" class="text-gray-300 hover:text-red-600 p-2"><i class="fa-solid fa-trash-can"></i></button></td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            },
+
+            addEntry() {
+                const date = document.getElementById('input-date').value;
+                if (!date) return alert("请选择日期");
+                const l1 = parseFloat(document.getElementById('input-loss1').value)||0, l2 = parseFloat(document.getElementById('input-loss2').value)||0;
+                const p1 = parseFloat(document.getElementById('input-profit1').value)||0, p2 = parseFloat(document.getElementById('input-profit2').value)||0;
+                const entry = { date, loss1:l1, loss2:l2, profit1:p1, profit2:p2, totalLoss:l1+l2, totalProfit:p1+p2, net:(l1+l2)+(p1+p2) };
+
+                const idx = this.data.findIndex(i => i.date === date);
+                if (idx > -1) { if(!confirm(`日期 ${date} 已存在，覆盖吗？`)) return; this.data[idx] = entry; } 
+                else { this.data.push(entry); }
+
+                this.saveData(true); // Auto push to cloud if connected
+                document.getElementById('addForm').reset();
+                document.getElementById('input-date').valueAsDate = new Date();
+                if (this.currentRange !== 'all') this.setRange('day'); else this.updateUI();
+                this.showToast('记录已保存');
+            },
+
+            deleteEntry(index) {
+                if(confirm("确定删除?")) {
+                    this.data.splice(index, 1);
+                    this.saveData(true);
+                }
+            },
+
+            saveData(pushCloud = false) {
+                this.sortData();
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data));
+                this.updateUI();
+                if (pushCloud && this.isSyncing) {
+                    this.pushToCloud();
+                }
+            },
+
+            clearData() {
+                if(confirm("确定清空所有数据?")) {
+                    localStorage.removeItem(STORAGE_KEY);
+                    this.data = [];
+                    this.updateUI();
+                }
+            },
+            
+            // --- Helper / Import / Export ---
+            exportExcel() {
+                if (this.data.length === 0) return alert("无数据");
+                const ws = XLSX.utils.json_to_sheet(this.data);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Sheet1");
+                XLSX.writeFile(wb, `Binance_Alpha_Backup.xlsx`);
+            },
+            handleFileUpload(input) {
+                const file = input.files[0]; if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const data = new Uint8Array(e.target.result);
+                        const workbook = XLSX.read(data, {type: 'array'});
+                        const jsonData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+                        let count = 0;
+                        jsonData.forEach(row => {
+                            const dateKey = Object.keys(row).find(k => k.includes('日期') || k.includes('Date'));
+                            if (!dateKey) return;
+                            let dateStr = row[dateKey];
+                            if (typeof dateStr === 'number') { const d = XLSX.SSF.parse_date_code(dateStr); dateStr = `${d.y}-${String(d.m).padStart(2,'0')}-${String(d.d).padStart(2,'0')}`; }
+                            if (dateStr) {
+                                const l1=row['loss1']||row['账号1损耗']||0, l2=row['loss2']||row['账号2损耗']||0, p1=row['profit1']||row['账号1收益']||0, p2=row['profit2']||row['账号2收益']||0;
+                                const entry = { date: String(dateStr).trim(), loss1:parseFloat(l1)||0, loss2:parseFloat(l2)||0, profit1:parseFloat(p1)||0, profit2:parseFloat(p2)||0 };
+                                entry.totalLoss=entry.loss1+entry.loss2; entry.totalProfit=entry.profit1+entry.profit2; entry.net=entry.totalLoss+entry.totalProfit;
+                                const idx = this.data.findIndex(d => d.date === entry.date);
+                                if (idx > -1) this.data[idx] = entry; else this.data.push(entry);
+                                count++;
+                            }
+                        });
+                        this.saveData(true);
+                        this.showToast(`导入 ${count} 条`);
+                    } catch (err) { alert("解析失败"); }
+                    input.value = '';
+                };
+                reader.readAsArrayBuffer(file);
+            },
+            toggleSyncModal() {
+                const modal = document.getElementById('syncModal');
+                modal.classList.toggle('hidden');
+            },
+            toggleQrBackup() {
+                document.getElementById('qr-backup-area').classList.toggle('hidden');
+                this.generateQRCode();
+            },
+            generateQRCode() {
+                const qrContainer = document.getElementById('qrcode');
+                qrContainer.innerHTML = '';
+                if (this.data.length === 0) return;
+                const compressed = LZString.compressToEncodedURIComponent(JSON.stringify(this.data));
+                new QRCode(qrContainer, { text: window.location.href.split('#')[0] + '#sync=' + compressed, width: 120, height: 120 });
+            },
+            backupToFile() {
+                const a = document.createElement('a'); a.href = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(this.data));
+                a.download = `alpha_backup_${new Date().toISOString().slice(0,10)}.json`; document.body.appendChild(a); a.click(); a.remove();
+            },
+            restoreFromFile(input) {
+                const file = input.files[0]; if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    try {
+                        const d = JSON.parse(e.target.result);
+                        if (Array.isArray(d)) { this.data = d; this.saveData(true); this.showToast("恢复成功"); }
+                    } catch(e) { alert("文件无效"); }
+                }
+                reader.readAsText(file);
+            },
+            showToast(msg) {
+                const t = document.getElementById('toast'); t.innerText = msg; t.style.opacity='1'; setTimeout(()=>t.style.opacity='0', 2000);
+            }
+        };
+
+        window.app.init();
+    </script>
+</body>
+</html>
