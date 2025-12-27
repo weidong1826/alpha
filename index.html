@@ -10,6 +10,8 @@
     <script src="https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.4.4/lz-string.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <!-- 引入 Chart.js 用于绘图 -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
     <style>
@@ -82,7 +84,7 @@
             <button onclick="app.setRange('all')" id="tab-all" class="tab-active py-2 rounded-lg transition">全部</button>
         </div>
 
-        <!-- 看板 -->
+        <!-- 核心看板 -->
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div class="card p-4 border-l-4 border-blue-500">
                 <p class="text-xs text-gray-500" id="label-net">总净收益</p>
@@ -99,6 +101,17 @@
             <div class="card p-4 border-l-4 border-yellow-500">
                 <p class="text-xs text-gray-500" id="label-days">统计天数</p>
                 <h2 id="stats-days" class="text-xl md:text-2xl font-bold mt-1 text-gray-700">0</h2>
+            </div>
+        </div>
+
+        <!-- 月度统计图表 (新增) -->
+        <div class="card p-4">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="font-bold text-sm text-gray-700"><i class="fa-solid fa-chart-simple mr-2 text-blue-500"></i>月度净收益趋势</h3>
+                <span class="text-xs text-gray-400" id="chart-currency-label">USD</span>
+            </div>
+            <div class="relative h-60 w-full">
+                <canvas id="monthlyChart"></canvas>
             </div>
         </div>
 
@@ -267,6 +280,7 @@
             db: null,
             cloudRef: null,
             isSyncing: false,
+            chartInstance: null, // 图表实例
 
             init() {
                 // UI Init
@@ -290,7 +304,6 @@
                 const savedRoomId = localStorage.getItem('alpha_sync_room_id');
                 if (savedRoomId && activeConfig) {
                     document.getElementById('sync-room-id').value = savedRoomId;
-                    // Optional: Auto-connect logic could go here, but manual is safer for now
                 }
             },
 
@@ -314,17 +327,10 @@
                 // Save ID for convenience
                 localStorage.setItem('alpha_sync_room_id', roomId);
                 
-                // Use a standard public collection path pattern compatible with generic Firestore rules
-                // Path: artifacts/{appId}/public/data/sync_rooms/{roomId}
-                // If using personal Firebase, we can use a root collection like 'alpha_sync_rooms'
-                
-                // Logic to switch path based on environment
                 let colRef;
                 if (envConfig && typeof __app_id !== 'undefined') {
-                    // Canvas Environment Strict Path
                     colRef = collection(this.db, 'artifacts', __app_id, 'public', 'data', 'sync_rooms');
                 } else {
-                    // Generic GitHub Pages Path (Root collection)
                     colRef = collection(this.db, 'alpha_sync_data');
                 }
                 
@@ -338,13 +344,11 @@
                 onSnapshot(this.cloudRef, (docSnap) => {
                     if (docSnap.exists()) {
                         const cloudData = docSnap.data().records;
-                        // Simple check: if cloud has data and local is empty, auto pull
                         if (this.data.length === 0 && cloudData && cloudData.length > 0) {
                             this.data = cloudData;
-                            this.saveData(false); // save locally, don't push back
+                            this.saveData(false); 
                             this.showToast("已从云端同步数据");
                         }
-                        // If both have data and differ, we could show a dot, but for now we rely on manual "Download" button to resolve conflicts safely
                     }
                 });
                 
@@ -448,13 +452,84 @@
                 let totalP = 0, totalL = 0;
                 filteredData.forEach(d => { totalP += d.totalProfit; totalL += d.totalLoss; });
                 const totalN = totalP + totalL;
+                
+                // Update Dashboard Cards
                 document.getElementById('stats-profit').innerText = this.formatMoney(totalP);
                 document.getElementById('stats-cost').innerText = this.formatMoney(totalL);
                 const netEl = document.getElementById('stats-net');
                 netEl.innerText = this.formatMoney(totalN);
                 netEl.className = `text-xl md:text-2xl font-bold mt-1 ${totalN >= 0 ? 'text-profit' : 'text-loss'}`;
                 document.getElementById('stats-days').innerText = filteredData.length;
+                
+                // Update Table
                 this.renderTable(filteredData); 
+
+                // Update Chart
+                this.renderChart();
+            },
+
+            // --- Charting Logic (New) ---
+            renderChart() {
+                const ctx = document.getElementById('monthlyChart').getContext('2d');
+                const rate = this.currency === 'CNY' ? this.exchangeRate : 1;
+                document.getElementById('chart-currency-label').innerText = this.currency;
+
+                // Group data by Month
+                const monthlyData = {};
+                this.data.forEach(item => {
+                    const monthKey = item.date.substring(0, 7); // YYYY-MM
+                    if (!monthlyData[monthKey]) monthlyData[monthKey] = 0;
+                    monthlyData[monthKey] += item.net;
+                });
+
+                // Sort Months
+                const sortedMonths = Object.keys(monthlyData).sort();
+                const chartValues = sortedMonths.map(m => monthlyData[m] * rate);
+
+                // Destroy old chart
+                if (this.chartInstance) {
+                    this.chartInstance.destroy();
+                }
+
+                // Create new chart
+                this.chartInstance = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: sortedMonths,
+                        datasets: [{
+                            label: '净收益 (Net)',
+                            data: chartValues,
+                            backgroundColor: chartValues.map(v => v >= 0 ? '#0ecb81' : '#f6465d'), // Green if > 0, Red if < 0
+                            borderRadius: 4,
+                            barThickness: 'flex',
+                            maxBarThickness: 40
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false }, // Hide legend as color explains it
+                            tooltip: {
+                                callbacks: {
+                                    label: (ctx) => {
+                                        const symbol = this.currency === 'CNY' ? '¥' : '$';
+                                        return symbol + ctx.parsed.y.toLocaleString('en-US', {minimumFractionDigits: 2});
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            y: {
+                                grid: { color: '#f3f4f6' },
+                                ticks: { callback: (val) => val }
+                            },
+                            x: {
+                                grid: { display: false }
+                            }
+                        }
+                    }
+                });
             },
 
             renderTable(displayData) {
